@@ -38,6 +38,7 @@ module.exports = {
       },
     },
     {
+      // Config files use CJS
       files: ['*.cjs', '*.config.js'],
       env: { node: true },
       rules: {
