@@ -1,0 +1,521 @@
+// =============================================================================
+// LinguistBridge — Prisma schema
+// PostgreSQL 16. Money is stored as integer minor units (e.g. 1000 = $10.00).
+// All timestamps are UTC. Statuses/roles are enums. See docs/architecture.md
+// for the layering rules (routes → controllers → services → repositories).
+// =============================================================================
+
+// Prisma ORM v7: connection URLs live in prisma.config.ts (see that file).
+// The generator emits the client to src/generated/prisma (gitignored).
+generator client {
+  provider = "prisma-client"
+  output   = "../src/generated/prisma"
+}
+
+datasource db {
+  provider = "postgresql"
+}
+
+// -----------------------------------------------------------------------------
+// Enums
+// -----------------------------------------------------------------------------
+
+enum Role {
+  CLIENT
+  INTERPRETER
+  ADMIN
+}
+
+enum SessionRequestType {
+  ON_DEMAND
+  SCHEDULED
+}
+
+enum SessionRequestStatus {
+  PENDING
+  MATCHED
+  EXPIRED
+  CANCELLED
+  ESCALATING
+}
+
+enum SessionStatus {
+  SCHEDULED
+  IN_PROGRESS
+  COMPLETED
+  CANCELLED
+  DISPUTED
+  NO_SHOW
+}
+
+enum ProficiencyLevel {
+  A1
+  A2
+  B1
+  B2
+  C1
+  C2
+  NATIVE
+}
+
+enum AvailabilityType {
+  RECURRING
+  EXCEPTION
+}
+
+enum LedgerAccountType {
+  CLIENT_DEPOSIT
+  ESCROW
+  INTERPRETER_RECEIVABLE
+  PLATFORM_REVENUE
+  PLATFORM_PAYOUTS
+  REFUND
+  DISPUTE_RESERVE
+}
+
+enum LedgerEntryType {
+  DEBIT
+  CREDIT
+}
+
+enum PayoutStatus {
+  PENDING
+  IN_REVIEW
+  SUCCEEDED
+  FAILED
+  CANCELLED
+}
+
+enum DisputeStatus {
+  OPEN
+  UNDER_REVIEW
+  RESOLVED_CLIENT
+  RESOLVED_INTERPRETER
+  RESOLVED_SPLIT
+  REJECTED
+  ESCALATED
+}
+
+enum ReviewRole {
+  CLIENT_TO_INTERPRETER
+  INTERPRETER_TO_CLIENT
+}
+
+enum NotificationChannel {
+  IN_APP
+  EMAIL
+  PUSH
+}
+
+enum MessageChannel {
+  CHAT
+  SYSTEM
+}
+
+// -----------------------------------------------------------------------------
+// Lookup / shared tables
+// -----------------------------------------------------------------------------
+
+model Language {
+  id        String                @id @default(cuid())
+  code      String                @unique // BCP-47 / ISO 639-1, e.g. "en", "fr", "rw"
+  name      String
+  native    String?
+  isActive  Boolean               @default(true)
+  createdAt DateTime              @default(now()) @db.Timestamptz
+  updatedAt DateTime              @updatedAt @db.Timestamptz
+
+  interpreterLanguages InterpreterLanguage[]
+  sessionRequestsFrom SessionRequest[] @relation("SessionRequestFromLanguage")
+  sessionRequestsTo   SessionRequest[] @relation("SessionRequestToLanguage")
+
+  @@index([isActive])
+}
+
+// -----------------------------------------------------------------------------
+// Users & interpreters
+// -----------------------------------------------------------------------------
+
+model User {
+  id            String   @id @default(cuid())
+  email         String   @unique
+  passwordHash  String
+  fullName      String
+  role          Role
+  phoneNumber   String?
+  avatarUrl     String?
+  locale        String   @default("en") // preferred UI locale: en | fr | rw
+  isActive      Boolean  @default(true)
+  isEmailVerified Boolean @default(false)
+  createdAt     DateTime @default(now()) @db.Timestamptz
+  updatedAt     DateTime @updatedAt @db.Timestamptz
+
+  interpreterProfile InterpreterProfile?
+  sessionRequestsClient SessionRequest[] @relation("SessionRequestClient")
+  sessionsClient       Session[]         @relation("SessionClient")
+  sessionsInterpreter  Session[]         @relation("SessionInterpreter")
+  messages             Message[]
+  ledgerAccounts       LedgerAccount[]
+  payouts              Payout[]
+  reviewsGiven         Review[]          @relation("ReviewFrom")
+  reviewsReceived      Review[]          @relation("ReviewTo")
+  disputesRaised       Dispute[]         @relation("DisputeRaisedBy")
+  disputesHandled      Dispute[]         @relation("DisputeHandledBy")
+  notifications        Notification[]
+  auditLogs            AuditLog[]
+  refreshTokens        RefreshToken[]
+  idempotencyKeys      IdempotencyKey[]
+
+  @@index([role])
+  @@index([isActive])
+}
+
+model InterpreterProfile {
+  id              String   @id @default(cuid())
+  userId          String   @unique
+  displayName     String
+  bio             String?
+  yearsExperience Int      @default(0)
+  hourlyRateMinor Int      // minor units, e.g. 3000 = $30.00
+  currency        String   @default("USD") // ISO 4217
+  ratingAverage   Float    @default(0)
+  ratingCount     Int      @default(0)
+  isApproved      Boolean  @default(false)
+  isAvailable     Boolean  @default(false)
+  createdAt       DateTime @default(now()) @db.Timestamptz
+  updatedAt       DateTime @updatedAt @db.Timestamptz
+
+  user                  User                   @relation(fields: [userId], references: [id], onDelete: Cascade)
+  interpreterLanguages  InterpreterLanguage[]
+  availabilities        Availability[]
+
+  @@index([isApproved])
+  @@index([isAvailable])
+}
+
+model InterpreterLanguage {
+  id              String           @id @default(cuid())
+  interpreterId   String
+  languageId      String
+  proficiency     ProficiencyLevel
+  isPrimary       Boolean          @default(false)
+  createdAt       DateTime         @default(now()) @db.Timestamptz
+  updatedAt       DateTime         @updatedAt @db.Timestamptz
+
+  interpreter InterpreterProfile @relation(fields: [interpreterId], references: [id], onDelete: Cascade)
+  language    Language            @relation(fields: [languageId], references: [id], onDelete: Restrict)
+
+  @@unique([interpreterId, languageId])
+  @@index([languageId])
+}
+
+model Availability {
+  id              String           @id @default(cuid())
+  interpreterId   String
+  type            AvailabilityType
+  // Day of week for recurring slots: 0 = Sunday .. 6 = Saturday. NULL for EXCEPTION.
+  dayOfWeek       Int?
+  startTime       String           // "HH:mm" in the slot's IANA time zone
+  endTime         String           // "HH:mm" in the slot's IANA time zone
+  // For EXCEPTION rows: the concrete date this exception applies to.
+  exceptionDate   DateTime?        @db.Date
+  // IANA time zone, e.g. "Africa/Kigali", "Europe/London".
+  timeZone        String
+  isAvailable     Boolean           @default(true) // false = blocked exception
+  createdAt       DateTime         @default(now()) @db.Timestamptz
+  updatedAt       DateTime         @updatedAt @db.Timestamptz
+
+  interpreter InterpreterProfile @relation(fields: [interpreterId], references: [id], onDelete: Cascade)
+
+  @@index([interpreterId, dayOfWeek])
+  @@index([interpreterId, exceptionDate])
+}
+
+// -----------------------------------------------------------------------------
+// Session requests & sessions
+// -----------------------------------------------------------------------------
+
+model SessionRequest {
+  id              String                 @id @default(cuid())
+  clientId        String
+  type            SessionRequestType
+  status          SessionRequestStatus   @default(PENDING)
+  fromLanguageId  String
+  toLanguageId    String
+  escalationRound Int                    @default(0)
+  // For ON_DEMAND: requestedAt. For SCHEDULED: the proposed start time.
+  scheduledAt     DateTime?              @db.Timestamptz
+  estimatedMinutes Int                   @default(30)
+  notes           String?
+  createdAt       DateTime               @default(now()) @db.Timestamptz
+  updatedAt       DateTime               @updatedAt @db.Timestamptz
+
+  client         User     @relation("SessionRequestClient", fields: [clientId], references: [id], onDelete: Cascade)
+  fromLanguage   Language @relation("SessionRequestFromLanguage", fields: [fromLanguageId], references: [id], onDelete: Restrict)
+  toLanguage     Language @relation("SessionRequestToLanguage", fields: [toLanguageId], references: [id], onDelete: Restrict)
+  sessions       Session[]
+
+  @@index([status])
+  @@index([clientId])
+  @@index([fromLanguageId, toLanguageId])
+  @@index([escalationRound])
+}
+
+model Session {
+  id                String        @id @default(cuid())
+  requestId         String
+  interpreterId     String
+  clientId          String
+  status            SessionStatus @default(SCHEDULED)
+  // Actual scheduled / actual start and end (UTC).
+  startedAt         DateTime?     @db.Timestamptz
+  endedAt           DateTime?     @db.Timestamptz
+  billableMinutes   Int           @default(0)
+  ratePerHourMinor  Int           // snapshot of interpreter rate at booking time
+  currency          String        @default("USD")
+  // Escrow + payout references
+  escrowLedgerAccountId String?
+  payoutId               String?
+  createdAt         DateTime      @default(now()) @db.Timestamptz
+  updatedAt        DateTime      @updatedAt @db.Timestamptz
+
+  request         SessionRequest   @relation(fields: [requestId], references: [id], onDelete: Cascade)
+  interpreter    User             @relation("SessionInterpreter", fields: [interpreterId], references: [id], onDelete: Cascade)
+  client          User             @relation("SessionClient", fields: [clientId], references: [id], onDelete: Cascade)
+  escrowLedgerAccount LedgerAccount? @relation("SessionEscrowAccount", fields: [escrowLedgerAccountId], references: [id])
+  payout          Payout?           @relation(fields: [payoutId], references: [id])
+  messages        Message[]
+  reviews         Review[]
+  disputes        Dispute[]
+
+  @@index([requestId])
+  @@index([interpreterId])
+  @@index([clientId])
+  @@index([status])
+  @@index([interpreterId, clientId])
+}
+
+model Message {
+  id          String         @id @default(cuid())
+  sessionId   String
+  senderId    String
+  channel     MessageChannel @default(CHAT)
+  content     String
+  isRead      Boolean        @default(false)
+  createdAt   DateTime       @default(now()) @db.Timestamptz
+
+  session Session @relation(fields: [sessionId], references: [id], onDelete: Cascade)
+  sender  User    @relation(fields: [senderId], references: [id], onDelete: Cascade)
+
+  @@index([sessionId, createdAt])
+  @@index([senderId])
+}
+
+// -----------------------------------------------------------------------------
+// Double-entry ledger
+// -----------------------------------------------------------------------------
+
+model LedgerAccount {
+  id          String           @id @default(cuid())
+  userId      String?
+  type        LedgerAccountType
+  currency    String           @default("USD")
+  // Running balance in minor units. DEBIT-positive convention: asset accounts
+  // increase on debit; liability/revenue accounts increase on credit. The
+  // per-account `balanceMinor` is maintained by the ledger service so a quick
+  // read is available without summing entries.
+  balanceMinor Int             @default(0)
+  isActive     Boolean         @default(true)
+  createdAt    DateTime        @default(now()) @db.Timestamptz
+  updatedAt    DateTime        @updatedAt @db.Timestamptz
+
+  user          User           @relation(fields: [userId], references: [id], onDelete: SetNull)
+  entries       LedgerEntry[]
+  payouts       Payout[]
+  escrowSession Session?       @relation("SessionEscrowAccount")
+
+  @@index([userId])
+  @@index([type])
+  @@index([userId, type])
+}
+
+model LedgerTransaction {
+  // A transaction group: every LedgerEntry in a group must sum to zero
+  // (sum of debits == sum of credits). The ledger service enforces this
+  // inside a Prisma $transaction and rejects unbalanced groups.
+  id          String   @id @default(cuid())
+  // Optional business reference for traceability (e.g. "session:<id>:charge").
+  reference   String?
+  description String?
+  createdAt   DateTime @default(now()) @db.Timestamptz
+
+  entries LedgerEntry[]
+
+  @@index([reference])
+}
+
+model LedgerEntry {
+  id              String          @id @default(cuid())
+  transactionId   String
+  accountId       String
+  type            LedgerEntryType // DEBIT or CREDIT
+  amountMinor     Int             // always positive; sign comes from `type`
+  currency        String          @default("USD")
+  // Optional link back to the business object that triggered the entry.
+  sessionId       String?
+  payoutId        String?
+  createdAt       DateTime        @default(now()) @db.Timestamptz
+
+  transaction LedgerTransaction @relation(fields: [transactionId], references: [id], onDelete: Cascade)
+  account     LedgerAccount      @relation(fields: [accountId], references: [id], onDelete: Restrict)
+  session     Session?           @relation("SessionLedgerEntries", fields: [sessionId], references: [id])
+  payout      Payout?            @relation("PayoutLedgerEntries", fields: [payoutId], references: [id])
+
+  @@index([transactionId])
+  @@index([accountId])
+  @@index([accountId, type])
+  @@index([sessionId])
+}
+
+// -----------------------------------------------------------------------------
+// Payouts, reviews, disputes
+// -----------------------------------------------------------------------------
+
+model Payout {
+  id               String       @id @default(cuid())
+  payeeId          String
+  ledgerAccountId  String
+  amountMinor      Int
+  currency         String       @default("USD")
+  status           PayoutStatus @default(PENDING)
+  externalReference String?     // provider payout id / reference
+  processedAt      DateTime?    @db.Timestamptz
+  createdAt        DateTime     @default(now()) @db.Timestamptz
+  updatedAt        DateTime     @updatedAt @db.Timestamptz
+
+  payee   User           @relation(fields: [payeeId], references: [id], onDelete: Cascade)
+  account LedgerAccount  @relation(fields: [ledgerAccountId], references: [id], onDelete: Restrict)
+  session Session?       @relation(fields: [id], references: [payoutId])
+  ledgerEntries LedgerEntry[] @relation("PayoutLedgerEntries")
+
+  @@index([payeeId])
+  @@index([status])
+  @@index([ledgerAccountId])
+}
+
+model Review {
+  id           String     @id @default(cuid())
+  sessionId    String
+  fromUserId   String
+  toUserId     String
+  role         ReviewRole
+  rating       Int        // 1..5
+  comment      String?
+  isPublic     Boolean    @default(true)
+  createdAt    DateTime   @default(now()) @db.Timestamptz
+
+  session Session @relation(fields: [sessionId], references: [id], onDelete: Cascade)
+  fromUser User   @relation("ReviewFrom", fields: [fromUserId], references: [id], onDelete: Cascade)
+  toUser   User   @relation("ReviewTo", fields: [toUserId], references: [id], onDelete: Cascade)
+
+  @@unique([sessionId, fromUserId, role])
+  @@index([toUserId])
+}
+
+model Dispute {
+  id          String        @id @default(cuid())
+  sessionId   String
+  raisedById  String
+  handledById String?
+  status      DisputeStatus @default(OPEN)
+  reason      String
+  resolution  String?
+  refundMinor Int?          // minor units refunded to client, if any
+  createdAt   DateTime      @default(now()) @db.Timestamptz
+  updatedAt   DateTime      @updatedAt @db.Timestamptz
+
+  session    Session @relation(fields: [sessionId], references: [id], onDelete: Cascade)
+  raisedBy   User    @relation("DisputeRaisedBy", fields: [raisedById], references: [id], onDelete: Cascade)
+  handledBy  User?   @relation("DisputeHandledBy", fields: [handledById], references: [id], onDelete: SetNull)
+
+  @@index([status])
+  @@index([sessionId])
+}
+
+// -----------------------------------------------------------------------------
+// Notifications & audit
+// -----------------------------------------------------------------------------
+
+model Notification {
+  id         String              @id @default(cuid())
+  userId     String
+  channel    NotificationChannel
+  title      String
+  body       String
+  payload    Json?
+  isRead     Boolean             @default(false)
+  sentAt     DateTime?           @db.Timestamptz
+  readAt     DateTime?           @db.Timestamptz
+  createdAt  DateTime            @default(now()) @db.Timestamptz
+
+  user User @relation(fields: [userId], references: [id], onDelete: Cascade)
+
+  @@index([userId, isRead])
+  @@index([createdAt])
+}
+
+model AuditLog {
+  id         String   @id @default(cuid())
+  userId     String?
+  action     String   // e.g. "session.create", "ledger.transfer"
+  entityType String?
+  entityId   String?
+  metadata   Json?
+  ipAddress  String?
+  createdAt  DateTime @default(now()) @db.Timestamptz
+
+  user User? @relation(fields: [userId], references: [id], onDelete: SetNull)
+
+  @@index([userId])
+  @@index([entityType, entityId])
+  @@index([action])
+  @@index([createdAt])
+}
+
+// -----------------------------------------------------------------------------
+// Auth & idempotency helpers
+// -----------------------------------------------------------------------------
+
+model RefreshToken {
+  id        String    @id @default(cuid())
+  userId    String
+  tokenHash String    @unique // store hash, never the raw token
+  expiresAt DateTime  @db.Timestamptz
+  revokedAt DateTime? @db.Timestamptz
+  replacedBy String?  // id of the token that replaced this one (rotation)
+  createdAt DateTime @default(now()) @db.Timestamptz
+
+  user User @relation(fields: [userId], references: [id], onDelete: Cascade)
+
+  @@index([userId])
+  @@index([expiresAt])
+}
+
+model IdempotencyKey {
+  id           String   @id @default(cuid())
+  key          String   @unique // the x-idempotency-key header value
+  userId       String
+  // Request fingerprint to detect key reuse with a different payload.
+  requestHash  String
+  requestBody  Json?    // stored request for replay
+  responseStatus Int?
+  responseBody   Json?  // cached response body
+  expiresAt    DateTime @db.Timestamptz
+  createdAt    DateTime @default(now()) @db.Timestamptz
+  updatedAt    DateTime @updatedAt @db.Timestamptz
+
+  user User @relation(fields: [userId], references: [id], onDelete: Cascade)
+
+  @@index([userId])
+  @@index([expiresAt])
+}
