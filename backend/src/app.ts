@@ -1,6 +1,6 @@
 import compression from 'compression';
 import cors from 'cors';
-import express from 'express';
+import express, { type Express } from 'express';
 import helmet from 'helmet';
 import pinoHttp from 'pino-http';
 
@@ -10,7 +10,7 @@ import { requestId } from '@/middleware/requestId';
 import healthRouter from '@/modules/health/health.router';
 import { logger } from '@/utils/logger';
 
-const app = express();
+const app: Express = express();
 
 // ── Security headers ────────────────────────────────────────────────────────
 app.use(helmet());
