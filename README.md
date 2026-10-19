@@ -46,8 +46,7 @@ LinguistBridge/
 git clone https://github.com/Ingabirechadia/LinguistBridge.git
 cd LinguistBridge
 
-# 2. Copy env files
-cp .env.example .env
+# 2. Copy the backend environment file and fill in local values
 cp backend/.env.example backend/.env
 
 # 3. Start infrastructure
@@ -56,7 +55,11 @@ docker compose up -d
 # 4. Install all workspace dependencies
 pnpm install
 
-# 5. Start the backend dev server
+# 5. Apply the database migration and insert demo data
+pnpm prisma migrate dev
+pnpm seed
+
+# 6. Start the backend dev server
 pnpm dev
 # → http://localhost:4000/health
 ```
@@ -71,14 +74,22 @@ pnpm dev
 | `pnpm typecheck` | TypeScript type-check all packages |
 | `pnpm test` | Run all Jest tests |
 | `pnpm build` | Production build all packages |
+| `pnpm prisma <command>` | Run Prisma CLI commands from the backend package |
+| `pnpm seed` | Seed demo users, supported languages, and interpreter language pairs |
+
+The local demo accounts all use the password `Demo1234!`:
+
+- `client@demo.com`
+- `interpreter@demo.com`
+- `admin@demo.com`
 
 ---
 
 ## Environment Variables
 
-Copy `.env.example` → `.env` and fill in real values. **Never commit `.env`.**
+Copy `backend/.env.example` → `backend/.env` and fill in real values. **Never commit `.env`.**
 
-See [`.env.example`](.env.example) for the full list.
+See [`backend/.env.example`](backend/.env.example) for the full list.
 
 ---
 

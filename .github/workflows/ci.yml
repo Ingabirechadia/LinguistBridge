@@ -1,0 +1,107 @@
+name: CI
+
+on:
+  push:
+    branches:
+      - main
+      - 'feat/**'
+      - 'fix/**'
+  pull_request:
+    branches:
+      - main
+
+jobs:
+  # ── Backend ──────────────────────────────────────────────────────────────
+  backend:
+    name: 'Backend — lint · typecheck · test'
+    runs-on: ubuntu-latest
+
+    services:
+      postgres:
+        image: postgres:16-alpine
+        env:
+          POSTGRES_USER: linguistbridge
+          POSTGRES_PASSWORD: linguistbridge_secret
+          POSTGRES_DB: linguistbridge_test
+        ports:
+          - 5432:5432
+        options: >-
+          --health-cmd pg_isready
+          --health-interval 10s
+          --health-timeout 5s
+          --health-retries 5
+
+      redis:
+        image: redis:7-alpine
+        ports:
+          - 6379:6379
+        options: >-
+          --health-cmd "redis-cli ping"
+          --health-interval 10s
+          --health-timeout 5s
+          --health-retries 5
+
+    env:
+      NODE_ENV: test
+      PORT: 4001
+      DATABASE_URL: postgresql://linguistbridge:linguistbridge_secret@localhost:5432/linguistbridge_test
+      REDIS_URL: redis://localhost:6379
+      JWT_SECRET: ci_jwt_secret_value_that_is_at_least_32_chars
+      JWT_REFRESH_SECRET: ci_refresh_secret_value_at_least_32_chars
+      CORS_ORIGIN: http://localhost:3000
+
+    steps:
+      - name: Checkout code
+        uses: actions/checkout@v4
+
+      - name: Setup pnpm
+        uses: pnpm/action-setup@v4
+        with:
+          version: 9.15.9
+
+      - name: Setup Node.js
+        uses: actions/setup-node@v4
+        with:
+          node-version: '20'
+          cache: 'pnpm'
+
+      - name: Install dependencies
+        run: pnpm install --frozen-lockfile
+
+      - name: Generate Prisma client
+        run: pnpm --filter @linguistbridge/backend db:generate
+
+      - name: Lint
+        run: pnpm --filter @linguistbridge/backend lint
+
+      - name: Type check
+        run: pnpm --filter @linguistbridge/backend typecheck
+
+      - name: Run tests
+        run: pnpm --filter @linguistbridge/backend test
+
+  # ── Frontend ─────────────────────────────────────────────────────────────
+  frontend:
+    name: 'Frontend — typecheck'
+    runs-on: ubuntu-latest
+
+    steps:
+      - name: Checkout code
+        uses: actions/checkout@v4
+
+      - name: Setup pnpm
+        uses: pnpm/action-setup@v4
+        with:
+          version: 9.15.9
+
+      - name: Setup Node.js
+        uses: actions/setup-node@v4
+        with:
+          node-version: '20'
+          cache: 'pnpm'
+
+      - name: Install dependencies
+        run: pnpm install --frozen-lockfile
+
+      - name: Type check
+        run: pnpm --filter @linguistbridge/frontend typecheck

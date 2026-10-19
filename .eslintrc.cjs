@@ -46,5 +46,5 @@ module.exports = {
       },
     },
   ],
-  ignorePatterns: ['dist/', '.next/', 'node_modules/', 'coverage/', '*.d.ts'],
+  ignorePatterns: ['dist/', '.next/', 'node_modules/', 'coverage/', 'src/generated/', '*.d.ts'],
 };
