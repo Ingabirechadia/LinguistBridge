@@ -11,6 +11,8 @@
   "scripts": {
     "dev": "pnpm --filter @linguistbridge/backend dev",
     "dev:frontend": "pnpm --filter @linguistbridge/frontend dev",
+    "prisma": "node backend/node_modules/prisma/build/index.js --config backend/prisma.config.ts",
+    "seed": "node backend/node_modules/tsx/dist/cli.mjs backend/prisma/seed.ts",
     "build": "pnpm -r build",
     "lint": "pnpm -r lint",
     "typecheck": "pnpm -r typecheck",
